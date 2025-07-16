@@ -18,7 +18,7 @@ Task.While(true)
 local inputs = {{1, 2}, {8, 10}, {10, -5}, {10, 1}}
 local outputs = {{5}, {28}, {0}, {12}}
 
-local learning_rate = 0.0001
+local learning_rate = 0.001
 
 // Task lib wrap, not neccesarry, but it's better to use it to avoid CPU exceed.
 // Network training is CPU greedy.
