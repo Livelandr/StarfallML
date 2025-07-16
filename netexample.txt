@@ -8,7 +8,7 @@ local Task = require("libs/task.txt")
 ---@include libs/machine_learning.txt
 local ML = require("libs/machine_learning.txt")
 
-// Training only serverside, i don't use @server because weight dumps work only with @shared
+// Making training serverside, i don't use @server because weight dumps work only with @shared
 if CLIENT then return end 
 
 // Doesn't let CPU usage be more than 70%
@@ -63,6 +63,7 @@ Task.run(function()
     // Works shitty with huge networks, but i'm too lazy to implement big-ass network saving
     // It uses JSON and LZMA compress, and, because of JSON, sometime losts some data, which is
     // critical for big networks, i advise you to use better methods for saving networks, instead of built-in one. 
+    // Also it's serverside only function.
     ML.name = "testnet"
     ML.SaveDump(dump)
     
@@ -70,6 +71,7 @@ Task.run(function()
     network:randomize(-0.1, 0.1)
     
     // Getting dump from client (should be same name)
+    // Serverside function only too.
     ML.RequestDump(function(dump)
         network:loadNetworkVars(dump)
         
