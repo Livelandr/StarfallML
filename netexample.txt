@@ -71,17 +71,20 @@ Task.run(function()
     // Randomizing it so we can check dump loading
     network:randomize(-0.1, 0.1)
     
-    // Getting dump from client (should be same name)
-    // Serverside function only too.
-    ML.RequestDump(function(dump)
-        network:loadNetworkVars(dump)
-        
-        // RequestDump function is async, so we need to recreate Task boundary
-        Task.run(function()
-            // Checking
-            local output = network:process({10, 18})
-            print(output[1])
+    
+    // Waiting second, letting client save dump fully
+    timer.simple(1, function()
+        // Getting dump from client (should be same name)
+        // Serverside function only too.
+        ML.RequestDump(function(dump)
+            network:loadNetworkVars(dump)
+            
+            // RequestDump function is async, so we need to recreate Task boundary
+            Task.run(function()
+                // Checking
+                local output = network:process({10, 18})
+                print(output[1])
+            end)
         end)
-    end)
-        
+    end)    
 end)
