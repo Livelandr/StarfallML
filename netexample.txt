@@ -62,7 +62,7 @@ Task.run(function()
     
     // Setting saving name and saving it on owner's client
     // Works shitty with huge networks, but i'm too lazy to implement big-ass network saving
-    // It uses JSON and LZMA compress, and, because of JSON, sometime losts some data, which is
+    // It uses JSON and LZMA compress, and, because of JSON, sometime it lose some data, which is
     // critical for big networks, i advise you to use better methods for saving networks, instead of built-in one. 
     // Also it's serverside only function.
     ML.name = "testnet"
