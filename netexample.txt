@@ -26,6 +26,7 @@ Task.run(function()
     
     // creating network with 2 inputs, also (also unnecessary) giving it Task reference so it can use it too.
     local network = ML.network(2, Task)    
+    // Setting learning rate, too big will cause training failure and NaNs!
     network:setLearningRate(learning_rate)
     // Adding layers with 3 and 2 neurons
     network:addLayer(3, ML.activFunctions.linear)
