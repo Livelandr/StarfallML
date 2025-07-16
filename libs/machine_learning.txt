@@ -1,0 +1,422 @@
+---@name libs/lnnl/neural_network
+if setAuthor then
+    setAuthor((chip():getChipAuthor() or "") .. "\n[ Machine Learning by Livelandr ]")
+end
+
+local Neuron = class("Neuron")
+local Layer = class("Layer")
+local Network = class("Network")
+
+
+local table_insert = table.insert
+local math_rand = math.rand
+
+local ML = {name = "network", neuron = Neuron, layer = Layer, network = Network}
+
+ML.activFunctions = {
+    linear = {
+        func = function(x) 
+            return x 
+        end, 
+        derivative = function(x) 
+            return 1 
+        end
+    },
+    relu = {
+        func = function(x) 
+            return ((x < 0) and x*0.01 or x) 
+        end, 
+        derivative = function(x) 
+            return ((x < 0) and 0.01 or 1)
+        end
+    },
+    sigmoid = {
+        func = function(x)
+            return 1/(1+math.exp(-x))
+        end,  
+        derivative = function(x)
+            local a = 1/(1+math.exp(-x))
+            return a*(1-a)
+        end 
+    }
+}
+
+
+-- NETWORK SHIT
+function ML.SaveDump(dump)
+   net.start("sendDumpToHTTP")
+   net.writeStream(json.encode(dump))
+   net.send(owner(), false) 
+end 
+
+local clRequests = {}
+
+function ML.RequestDump(func)
+    local token = http.base64Encode(tostring(timer.systime()))    
+    clRequests[token] = func
+    
+    net.start("readFromHTTP")
+    net.writeString(token)
+    net.send(owner())
+end
+
+net.receive("httpSendDumpToServer", function(len, ply)
+    if (ply != owner()) then return end
+    local token = net.readString()
+    local dump = net.readString()
+    
+    local uncompressed = json.decode(bit.decompress(http.base64Decode(dump)))
+    
+    clRequests[token](uncompressed)
+end)
+
+if CLIENT then
+    function ML.SaveDumpToFile(jdump)
+        local compressedBase = http.base64Encode( bit.compress(jdump) )
+        
+        file.createDir("lnnl_dump")
+        file.write( string.format("lnnl_dump/%s.dat", ML.name), compressedBase)
+    end
+
+    net.receive("sendDumpToHTTP", function(len, ply)
+        net.readStream(function(data) ML.SaveDumpToFile(data) end)
+    end)
+    
+    
+    net.receive("readFromHTTP", function(len, ply)
+        local token = net.readString()
+        
+        net.start("httpSendDumpToServer")
+        net.writeString(token)
+        net.writeString(file.read(string.format("lnnl_dump/%s.dat", ML.name)))
+        net.send()
+    end)
+end
+
+
+local ipairs = ipairs
+
+function ML.softmax(tbl, temp) 
+    temp = temp or 1
+    
+    local out = {}
+    local sum = 0
+    for k, v in ipairs(tbl) do
+        tbl[k] = math.exp(v/temp)              
+        sum = sum + tbl[k]
+    end
+    
+    for k, v in ipairs(tbl) do
+        table.insert(out, v/sum)     
+    end
+        
+    return out
+end
+
+function ML.max(tbl)
+    local max = #tbl
+    for k, v in ipairs(tbl) do
+        if (v > tbl[max]) then max = k end    
+    end
+    
+    return max
+end
+
+function Neuron:initialize()
+    self.lastOutput = 0 
+    self.lastPureOutput = 0 
+    self.bias = 0 
+    self.weights = {}
+    self.input = {}
+    
+    self.activation = ML.activFunctions.linear
+end
+
+function Neuron:process(inputs)
+    if inputs then
+        self.input = inputs
+    end
+    
+    local sum = self.bias
+    for k, v in ipairs(self.input) do
+        sum = sum + v * (self.weights[k] or 0)
+    end
+    
+    self.lastPureOutput = sum
+    self.lastOutput = self.activation.func(self.lastPureOutput)
+    return self.lastOutput
+end
+
+function Neuron:processPure(inputs)
+    if inputs then
+        self.input = inputs
+    end
+    
+    local sum = self.bias
+    for k, v in ipairs(self.input) do
+        sum = sum + v * self.weights[k]
+    end
+    
+    self.lastPureOutput = sum
+    return self.lastPureOutput
+end
+
+function Neuron:resizeWeights(newSize)
+    self.weights = {}
+    for i = 1, newSize do
+        self.weights[i] = self.weights[i] or 1 
+    end 
+end
+
+function Neuron:calculateCost(inputs, expected)
+    local calc = self:process(inputs)
+    return (calc-expected)*(calc-expected) 
+end
+
+// Layer
+function Layer:resizeNeuronWeights(inputSize)
+    for k, v in ipairs(self.neurons) do
+        v:resizeWeights(inputSize)
+    end
+end
+
+function Layer:initialize(size)
+    inputSize = inputSize or 1
+    
+    self.neurons = {}
+    self.out = {}
+    
+    if (size) then
+        for i = 1, size do
+            self.neurons[i] = Neuron()
+        end     
+    end
+end
+
+function Layer:process(inputs, taskHandle)
+    self.out = {}
+    for k, v in ipairs(self.neurons) do
+      self.out[k] = self.neurons[k]:process(inputs)
+      if (tasked) then taskHandle.yield() end 
+    end 
+
+    return self.out
+end
+
+// Network
+
+function Network:initialize(inputSize, taskHandle)
+    inputSize = inputSize or 1     
+    
+    self.omegaPrecalculated = {}
+    self.input = {}
+    self.output = {}
+    self.hidLayers = {}
+    self.learningRate = 0.001
+    if (taskHandle) then
+      self.taskHandle = taskHandle
+    end
+    for i = 1, inputSize do
+        self.input[i] = 0
+    end
+end
+
+function Network:setInputs(_input)
+    self.input = _input
+end
+function Network:getOutputs()
+    return self.output
+end
+
+function Network:randomize(n, m)
+    for layer, _ in ipairs(self.hidLayers) do
+        for neuron, _ in ipairs(self.hidLayers[layer].neurons) do
+          self.hidLayers[layer].neurons[neuron].bias = math_rand(n, m)
+          for weight, _ in ipairs(self.hidLayers[layer].neurons[neuron].weights) do
+            self.hidLayers[layer].neurons[neuron].weights[weight] = math_rand(n, m)
+          end
+        end
+    end
+end
+
+function Network:process(_input)
+    if (_input) then
+        self.input = _input
+    end
+    
+    self.hidLayers[1]:process(self.input)
+
+    for i = 2, #self.hidLayers do
+      self.hidLayers[i]:process(self.hidLayers[i-1].out, self.taskHandle)
+    
+      if (self.taskHandle) then self.taskHandle.yield() end
+    end     
+
+    self.output = self.hidLayers[#self.hidLayers].out
+    return self.output
+end
+
+function Network:calculateCost(input, expected)
+    self:process(input)
+
+    local sumCost = 0
+    for i = 1, #self.output do
+      sumCost = (self.output[i] - expected[i])^2 
+    end 
+
+    return sumCost;
+end
+
+function Network:Omega(expected, layer, neuron)
+    if (layer == #self.hidLayers) then
+      return 2*(self.output[neuron]-expected[neuron])*self.hidLayers[layer].neurons[neuron].activation.derivative(self.hidLayers[layer].neurons[neuron].lastPureOutput) 
+    end
+
+    local sum = 0;
+
+    for n = 1, #self.hidLayers[layer+1].neurons do
+      sum = sum + self.hidLayers[layer+1].neurons[n].weights[neuron] * self.omegaPrecalculated[layer+1][n]
+    end 
+
+    return sum*self.hidLayers[layer].neurons[neuron].activation.derivative(self.hidLayers[layer].neurons[neuron].lastPureOutput)
+end
+
+function Network:recalculateOmega(expected)
+    self.omegaPrecalculated = {}
+    
+    for layerIndex = #self.hidLayers, 1, -1 do
+      local curLayer = self.hidLayers[layerIndex]
+      
+      local neuronVec = {}
+    
+      for neuronIndex = 1, #curLayer.neurons do
+         table_insert(neuronVec, self:Omega(expected, layerIndex, neuronIndex))     
+         --if (self.taskHandle) then self.taskHandle.yield() end
+      end
+    
+      self.omegaPrecalculated[layerIndex] = neuronVec
+    end
+end
+
+function Network:setLearningRate(_rate)
+    self.learningRate = _rate or 0.01
+end
+
+function Network:trainNetwork()
+    local sum;
+
+    for layer = 1, #self.hidLayers do
+      for neuron = 1, #self.hidLayers[layer].neurons do
+         sum = self.omegaPrecalculated[layer][neuron]
+
+         self.hidLayers[layer].neurons[neuron].bias = self.hidLayers[layer].neurons[neuron].bias - sum*self.learningRate
+        
+         for weight = 1, #self.hidLayers[layer].neurons[neuron].weights do
+            local a = sum
+            if (layer == 1) then a = a*self.input[weight]
+            else    
+                a = a * self.hidLayers[layer-1].neurons[weight].lastOutput 
+            end
+            
+            self.hidLayers[layer].neurons[neuron].weights[weight] = self.hidLayers[layer].neurons[neuron].weights[weight] - a*self.learningRate
+            --if (self.taskHandle) then self.taskHandle.yield() end
+         end
+      end      
+    end 
+end
+
+function Network:train(inputs, expected)  
+    self:process(inputs)
+    self:recalculateOmega(expected)
+    self:trainNetwork(self.learningRate) 
+end
+
+function Network:setLayerActivationFunction(func, layer)
+    for k, v in ipairs(self.hidLayers[layer].neurons) do
+        v.activation = func     
+    end
+end
+
+function Network:addLayer(layerSize, func)
+    table_insert(self.hidLayers, Layer(layerSize))
+
+    if (#self.hidLayers == 1) then
+        self.hidLayers[#self.hidLayers]:resizeNeuronWeights(#self.input)
+    else
+        self.hidLayers[#self.hidLayers]:resizeNeuronWeights(#self.hidLayers[#self.hidLayers-1].neurons)
+    end
+     if (self.taskHandle) then self.taskHandle.yield() end
+
+    self:setLayerActivationFunction(func, #self.hidLayers)
+end
+
+function Network:removeLayer(layer)
+    table.remove(self.hidLayers, layer)
+    
+    if (layer == 1) then
+        self.hidLayers[layer]:resizeNeuronWeights(#self.input)
+    else
+        self.hidLayers[layer]:resizeNeuronWeights(#self.hidLayers[layer-1].neurons)
+    end
+end
+
+function Network:resizeLayer(layer, newSize)
+    if #self.hidLayers[layer] > newSize then
+        local oldSize = #self.hidLayers[layer].neurons
+        for i = 1, oldSize-newSize do
+            table.remove(self.hidLayers[layer], #self.hidLayers[layer].neurons)
+        end 
+        
+        if (layer != #self.hidLayers) then
+            self.hidLayers[layer+1]:resizeNeuronWeights(#self.hidLayers[layer])
+        end    
+    elseif #self.hidLayers[layer] < newSize then
+        local oldSize = #self.hidLayers[layer].neurons
+        
+        for i = 1, newSize-oldSize do
+            self.hidLayers[layer].neurons[oldSize+i] = Neuron()
+        end 
+        
+        if (layer == 1) then
+            self.hidLayers[layer]:resizeNeuronWeights(#self.input)
+        else
+            self.hidLayers[layer]:resizeNeuronWeights(#self.hidLayers[layer-1].neurons)
+        end
+        
+        if (layer != #self.hidLayers) then
+            self.hidLayers[layer+1]:resizeNeuronWeights(#self.hidLayers[layer].neurons)
+        end    
+    end
+    self:setLayerActivationFunction(self.hidLayers[layer].neurons[1].activation, layer)
+end
+
+function Network:dumpNetworkVars()
+    local dump = {}
+
+    for _, layer in ipairs(self.hidLayers) do
+        for _, neuron in ipairs(layer.neurons) do
+          table_insert(dump, neuron.bias)
+          for _, weight in ipairs(neuron.weights) do
+             table_insert(dump, weight)
+          end
+        end
+    end
+    return dump
+end
+
+function Network:loadNetworkVars(dump)
+    local it = 1
+
+    for layer, _ in ipairs(self.hidLayers) do
+        for neuron, _ in ipairs(self.hidLayers[layer].neurons) do
+          self.hidLayers[layer].neurons[neuron].bias = dump[it]
+          it = it + 1
+          for weight, _ in ipairs(self.hidLayers[layer].neurons[neuron].weights) do
+             self.hidLayers[layer].neurons[neuron].weights[weight] = dump[it]
+             it = it + 1
+          end
+        end
+    end
+end
+
+return ML

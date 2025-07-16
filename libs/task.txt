@@ -1,0 +1,355 @@
+---@name libs/task
+if setAuthor and not Task then
+    setAuthor((chip():getChipAuthor() or "") .. "\n[ Task lib by Kekobka ]")
+end
+
+local cwait, cyield = coroutine.wait, coroutine.yield
+local systime, frametime = timer.systime, timer.frametime
+local table_remove = table.remove
+local max = math.max
+
+if not Task then
+    Task = class("Task")
+end
+
+local canProcess
+do
+    local cpuTotalAverage, cpuTotalUsed, cpuMax = cpuTotalAverage, cpuTotalUsed, cpuMax
+
+    canProcess = function()
+        return max(cpuTotalAverage(), cpuTotalUsed() / 4) < cpuMax() * 0.7
+    end
+end
+
+local tasks = {}
+Task.static.pool = tasks
+local WORK = function()
+    for Key, work in ipairs(tasks) do
+        if work.thread(Key) then
+            table_remove(tasks, Key)
+        end
+    end
+end
+
+local While = false
+local RUNTASK = function(hookname)
+    if While then
+        local curtime = systime()
+        while max(systime() - curtime, frametime()) < 1 / 60 and canProcess() do
+            WORK()
+        end
+    else
+        WORK()
+    end
+
+    if #tasks < 1 then
+        hook.remove(hookname, table.address(Task))
+    end
+end
+
+function Task:initialize(func, hk)
+    self.func = func
+    self.hook = hk
+    self.ret = {}
+    self.solved = false
+    self.thread = coroutine.wrap(function(Key)
+        self.ret = {self.func()}
+        self.solved = true
+        if self.thenfn then
+            self.thenfn(unpack(self.ret))
+        end
+        return true
+    end)
+end
+
+function Task:start()
+    table.insert(tasks, self)
+    hook.add(self.hook, table.address(Task), function()
+        RUNTASK(self.hook)
+    end)
+    return self
+end
+
+Task.While = function(bool)
+    local temp = While
+    While = bool
+    return temp
+end
+
+Task.run = function(func, hk)
+    return Task(func, hk or "think"):start()
+end
+
+Task.yield = cyield
+Task.sleep = function(ms)
+    cwait(ms / 1000)
+end
+
+function Task.renderoffscreen(func)
+    return Task(func, "renderoffscreen"):start()
+end
+
+function Task.benchmark(func, th, passes, hookname)
+    local task = Task(function()
+        while true do
+            local start = systime()
+            While = true
+            for x = 0, passes or 10000000 do
+                func()
+                cyield()
+            end
+            While = false
+            th(systime() - start)
+            cyield()
+        end
+    end)
+    local rtName = table.address({})
+    local thread = task.thread
+    hook.add(hookname or "think", rtName, function()
+        if While then
+            local curtime = systime()
+            while systime() - curtime < 1 / 60 and canProcess() do
+                if thread() then
+                    return hook.remove("renderoffscreen", rtName)
+                end
+            end
+        else
+            if thread() then
+                return hook.remove("renderoffscreen", rtName)
+            end
+        end
+    end)
+end
+
+do
+    local select = render and render.selectRenderTarget
+
+    Task.renderfor = function(res, func, hk)
+        local size = 1024 / res
+
+        local thread = Task(function()
+            for y = 0, res - 1 do
+                for x = 0, res - 1 do
+                    func(x * size, y * size, size, size)
+                    cyield()
+                end
+            end
+        end).thread
+
+        local ident = table.address({})
+
+        render.createRenderTarget(ident)
+        hook.add(hk or "renderoffscreen", ident, function()
+            select(ident)
+
+            if While then
+                local curtime = systime()
+                while systime() - curtime < 1 / 60 and canProcess() do
+                    if thread() then
+                        return hook.remove(hk or "renderoffscreen", ident)
+                    end
+                end
+            else
+                if thread() then
+                    return hook.remove(hk or "renderoffscreen", ident)
+                end
+            end
+        end)
+
+        return ident
+    end
+end
+
+do
+    local select = render and render.selectRenderTarget
+
+    Task.rendertarget = function(func, hk)
+        local thread = Task(func).thread
+
+        local ident = table.address({})
+
+        render.createRenderTarget(ident)
+        hook.add(hk or "renderoffscreen", ident, function()
+            select(ident)
+
+            if While then
+                local curtime = systime()
+                while max(systime() - curtime, frametime()) < 1 / 60 and canProcess() do
+                    if thread() then
+                        return hook.remove(hk or "renderoffscreen", ident)
+                    end
+                end
+            else
+                if thread() then
+                    return hook.remove(hk or "renderoffscreen", ident)
+                end
+            end
+        end)
+
+        return ident
+    end
+end
+
+function Task.renderscene(func)
+    return Task(func, "renderscene"):start()
+end
+
+local dummyfunc = function()
+    return true
+end
+function Task:cancel()
+    self.thread = dummyfunc
+end
+
+function Task.all(tasks)
+    for _, task in pairs(tasks) do
+        while not task.solved do
+            Task.yield()
+        end
+    end
+    local ret = {}
+    for _, task in pairs(tasks) do
+        table.insert(ret, task.ret)
+    end
+    return unpack(ret)
+end
+TaskAll = Task.all
+
+function Task:th(fn)
+    self.thenfn = fn
+end
+
+function Task:await()
+    while not self.solved do
+        cyield()
+    end
+    return unpack(self.ret)
+end
+
+function Task:kill()
+    table.removeByValue(tasks, self)
+    table.empty(self)
+    self = nil
+end
+
+Task.wait = Task.await
+
+await = setmetatable({}, {
+    __mul = function(_, task)
+        -- assert(istable(task) and task:isInstanceOf(Task), "await for Task only")
+        return task:await()
+    end,
+    __tostring = function()
+        return "await function"
+    end,
+})
+
+async = setmetatable({}, {
+    __mul = function(_, fn)
+        assert(isfunction(fn), "is not function")
+
+        return function(...)
+            local args = {...}
+
+            return Task.run(function()
+                return fn(unpack(args))
+            end)
+        end
+    end,
+    __tostring = function()
+        return "async function"
+    end,
+})
+if not TASKINITIALIZED then
+    local http_ = table.copy(http)
+
+    fetch = async * function(url, options)
+        options = options or {}
+        local ret
+        local cc = function(...)
+            local args = {...}
+            ret = {body = args[1], length = args[2], headers = args[3], code = args[4]}
+        end
+        if options.payload then
+            http_.post(url, options.payload, cc, cc, options.headers)
+        else
+            http_.get(url, cc, cc, options.headers)
+        end
+        while not ret do
+            Task.yield()
+        end
+        return ret
+    end
+    http.isAsync = true
+    if CLIENT then
+        bass.isAsync = true
+        local bass_ = table.copy(bass)
+
+        bassURL = async * function(path, flags)
+            local ret
+
+            bass_.loadURL(path, flags or "", function(...)
+                ret = {...}
+            end)
+
+            while not ret do
+                Task.yield()
+            end
+            return unpack(ret)
+        end
+        soundLoad = async * function(url, flags)
+            local ret
+            local cc = function(...)
+                local args = {...}
+                ret = {Bass = args[1], error = args[2], name = args[3]}
+            end
+
+            bass_.loadURL(url, flags or "", cc)
+
+            while not ret do
+                Task.yield()
+            end
+            return ret
+        end
+    else
+        local prop_ = table.copy(prop)
+
+        prop.createAsync = async * function(...)
+            while not prop_.canSpawn() do
+                Task.sleep(200)
+            end
+
+            return prop.create(...)
+        end
+        prop.createSeatAsync = async * function(...)
+            while not prop_.canSpawn() do
+                Task.sleep(200)
+            end
+
+            return prop_.createSeat(...)
+        end
+        prop.createSentAsync = async * function(...)
+            while not prop_.canSpawn() do
+                Task.sleep(200)
+            end
+
+            return prop_.createSent(...)
+        end
+
+        prop.createCustomAsync = async * function(...)
+            while not prop_.canSpawn() do
+                Task.sleep(200)
+            end
+            return prop_.createCustom(...)
+        end
+    end
+    hologram.createAsync = async * function(...)
+        while not hologram.canSpawn() do
+            Task.sleep(200)
+        end
+        return hologram.create(...)
+    end
+end
+_G.TASKINITIALIZED = true
+
+return Task

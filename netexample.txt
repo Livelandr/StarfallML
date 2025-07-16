@@ -1,0 +1,84 @@
+--@name NeuralNetExample
+--@author Livelandr
+--@shared
+
+// Including libs
+--@include libs/task.txt
+local Task = require("libs/task.txt")
+---@include libs/machine_learning.txt
+local ML = require("libs/machine_learning.txt")
+
+// Training only serverside, i don't use @server because weight dumps work only with @shared
+if CLIENT then return end 
+
+// Doesn't let CPU usage be more than 70%
+Task.While(true)
+
+// training net so it's output would be input[1]+input[2]*2
+local inputs = {{1, 2}, {8, 10}, {10, -5}, {10, 1}}
+local outputs = {{5}, {28}, {0}, {12}}
+
+local learning_rate = 0.0001
+
+// Task lib wrap, not neccesarry, but it's better to use it to avoid CPU exceed.
+// Network training is CPU greedy.
+Task.run(function()
+    
+    // creating network with 2 inputs, also (also unnecessary) giving it Task reference so it can use it too.
+    local network = ML.network(2, Task)    
+    network:setLearningRate(learning_rate)
+    // Adding layers with 3 and 2 neurons
+    network:addLayer(3, ML.activFunctions.linear)
+    network:addLayer(2, ML.activFunctions.linear)
+    // Last layer will be output layer
+    network:addLayer(1, ML.activFunctions.linear)
+    // Randomizing weights and biases
+    network:randomize(-0.1, 0.1)
+    
+    // Looping training until average cost would be less than 0.001 
+    local cost
+    repeat
+        cost = 0
+        
+        for k, v in ipairs(inputs) do
+            // Using train function for input and output
+            network:train(inputs[k], outputs[k])   
+            cost = cost + network:calculateCost(inputs[k], outputs[k])
+        end 
+    until (cost / #inputs < 0.001) 
+    
+    print("Training complete")
+    
+    // Processing input and saving it's output table
+    local output = network:process({10, 18})
+    // Output should be approximately 46 (10+18*2)
+    print(output[1])
+    
+    
+    
+    // Getting our network's weights dump (LAYERS AND FUNCTIONS DON'T SAVE!)
+    local dump = network:dumpNetworkVars()
+    
+    // Setting saving name and saving it on owner's client
+    // Works shitty with huge networks, but i'm too lazy to implement big-ass network saving
+    // It uses JSON and LZMA compress, and, because of JSON, sometime losts some data, which is
+    // critical for big networks, i advise you to use better methods for saving networks, instead of built-in one. 
+    ML.name = "testnet"
+    ML.SaveDump(dump)
+    
+    // Randomizing it so we can check dump loading
+    network:randomize(-0.1, 0.1)
+    
+    // Getting dump from client (should be same name)
+    ML.RequestDump(function(dump)
+        network:loadNetworkVars(dump)
+        
+        // RequestDump function is async, so we need to recreate Task boundary
+        Task.run(function()
+            // Checking
+            local output = network:process({10, 18})
+            print(output[1])
+        end)
+    end)
+        
+end)
