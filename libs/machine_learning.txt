@@ -42,7 +42,6 @@ ML.activFunctions = {
 }
 
 
--- NETWORK SHIT
 function ML.SaveDump(dump)
    net.start("sendDumpToHTTP")
    net.writeStream(json.encode(dump))
