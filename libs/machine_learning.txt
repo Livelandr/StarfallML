@@ -1,4 +1,4 @@
----@name libs/lnnl/neural_network
+---@name libs/machibe_learning
 if setAuthor then
     setAuthor((chip():getChipAuthor() or "") .. "\n[ Machine Learning by Livelandr ]")
 end
